@@ -151,3 +151,6 @@ The request is a notification/handoff pointer, not a duplicate legal parcel reco
 
 ## Optional field AI submission update
 Surveyor submission no longer requires field AI re-analysis as a hard gate. GPS/location readiness plus required photos and field remarks control submission. Field AI remains available as a recommended comparison signal, and every Verification Request records whether it was completed so the Supervisor can see `COMPLETED` or `NOT RUN`.
+
+## Live building-reference resilience
+TraceBox AI does not silently fall back to the old synthetic 96-house grid. The live building-reference loader now tries the TraceBox same-origin `/api/overpass` proxy first (used on Vercel) and then multiple public Overpass mirrors with per-request timeouts. If all sources fail, the UI reports a retryable network/reference-service error instead of presenting fake detected houses.
