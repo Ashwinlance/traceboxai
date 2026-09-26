@@ -201,3 +201,10 @@ Surveyor submission no longer requires field AI re-analysis as a hard gate. GPS/
 - Workflow storage bumped to v7 to isolate older localhost state from previous builds.
 - 45 TypeScript/TSX source+test files parsed with 0 syntax diagnostics using the TypeScript transpiler.
 - Verification Request optional-AI behavior check: PASS.
+
+## Live building reference resilience
+- Replaced single Overpass dependency with three sequential live endpoints.
+- Uses POST requests with a 12-second timeout per endpoint.
+- Saves the last successful raw building response in browser localStorage, keyed by analysis area.
+- Uses cached footprints only after all live sources fail.
+- Never silently falls back to the old synthetic 96-house grid.

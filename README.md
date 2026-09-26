@@ -151,7 +151,3 @@ The request is a notification/handoff pointer, not a duplicate legal parcel reco
 
 ## Optional field AI submission update
 Surveyor submission no longer requires field AI re-analysis as a hard gate. GPS/location readiness plus required photos and field remarks control submission. Field AI remains available as a recommended comparison signal, and every Verification Request records whether it was completed so the Supervisor can see `COMPLETED` or `NOT RUN`.
-
-## Vercel live-building API proxy
-
-Production deployments do not call Overpass directly from the browser. The app uses `/api/overpass`, a Vercel server endpoint that proxies the building query and falls back between public Overpass instances. Local Vite development continues to query Overpass directly. This avoids browser-origin/CORS failures that can appear only after deployment.

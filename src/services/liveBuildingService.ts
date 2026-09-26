@@ -2,19 +2,13 @@ import type { PolygonGeometry } from '../types/gis';
 import type { ParcelRecord } from '../types/parcel';
 import { polygonAreaSqM, polygonCentroid, scalePolygon } from './geometryEditService';
 
-const OVERPASS_ENDPOINT = 'https://overpass-api.de/api/interpreter';
-
-function liveBuildingRequestUrl(center: [number, number], radiusMeters: number, query: string) {
-  if (import.meta.env.PROD) {
-    const params = new URLSearchParams({
-      lat: String(center[0]),
-      lng: String(center[1]),
-      radius: String(radiusMeters)
-    });
-    return `/api/overpass?${params.toString()}`;
-  }
-  return `${OVERPASS_ENDPOINT}?data=${encodeURIComponent(query)}`;
-}
+const OVERPASS_ENDPOINTS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter'
+] as const;
+const REQUEST_TIMEOUT_MS = 12_000;
+const CACHE_PREFIX = 'tracebox-live-buildings-v1';
 
 interface OverpassGeometryPoint { lat: number; lon: number }
 interface OverpassElement {
@@ -128,16 +122,86 @@ function alignTemplate(
   };
 }
 
+function cacheKey(center: [number, number], radiusMeters: number) {
+  return `${CACHE_PREFIX}:${center[0].toFixed(4)}:${center[1].toFixed(4)}:${radiusMeters}`;
+}
+
+function readCachedPayload(center: [number, number], radiusMeters: number): OverpassResponse | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(cacheKey(center, radiusMeters));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { savedAt: string; payload: OverpassResponse };
+    return parsed?.payload?.elements?.length ? parsed.payload : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedPayload(center: [number, number], radiusMeters: number, payload: OverpassResponse) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(cacheKey(center, radiusMeters), JSON.stringify({
+      savedAt: new Date().toISOString(),
+      payload
+    }));
+  } catch {
+    // Cache is best-effort only; a storage quota/privacy error must not break analysis.
+  }
+}
+
+async function requestOverpass(endpoint: string, query: string): Promise<OverpassResponse> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'
+      },
+      body: `data=${encodeURIComponent(query)}`,
+      signal: controller.signal
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json() as OverpassResponse;
+    if (!payload.elements?.length) throw new Error('empty response');
+    return payload;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function fetchBuildingPayload(
+  query: string,
+  center: [number, number],
+  radiusMeters: number
+): Promise<OverpassResponse> {
+  const failures: string[] = [];
+  for (const endpoint of OVERPASS_ENDPOINTS) {
+    try {
+      const payload = await requestOverpass(endpoint, query);
+      writeCachedPayload(center, radiusMeters, payload);
+      return payload;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'request failed';
+      failures.push(`${new URL(endpoint).hostname}: ${detail}`);
+    }
+  }
+
+  const cached = readCachedPayload(center, radiusMeters);
+  if (cached) return cached;
+
+  throw new Error(`Live building reference unavailable after ${OVERPASS_ENDPOINTS.length} sources (${failures.join(' · ')}). No cached footprint set is available yet.`);
+}
+
 export async function fetchAlignedBuildingParcels(
   templates: ParcelRecord[],
   center: [number, number] = [13.0417, 80.2367],
   radiusMeters = 320
 ): Promise<ParcelRecord[]> {
   const query = `[out:json][timeout:25];way["building"](around:${radiusMeters},${center[0]},${center[1]});out geom;`;
-  const url = liveBuildingRequestUrl(center, radiusMeters, query);
-  const response = await fetch(url, { headers: { Accept: 'application/json' } });
-  if (!response.ok) throw new Error(`Live building reference request failed (${response.status}).`);
-  const payload = await response.json() as OverpassResponse;
+  const payload = await fetchBuildingPayload(query, center, radiusMeters);
 
   const footprints = (payload.elements ?? [])
     .filter((element) => element.type === 'way' && element.geometry && element.geometry.length >= 4)
@@ -151,7 +215,7 @@ export async function fetchAlignedBuildingParcels(
     });
 
   if (footprints.length < 8) {
-    throw new Error('Not enough residential building footprints were returned for this analysis area.');
+    throw new Error('The live reference returned too few likely-house footprints for this area. Try again or choose a denser analysis area.');
   }
 
   return footprints.map(({ element, footprint }, index) => {
