@@ -2,11 +2,19 @@ import type { PolygonGeometry } from '../types/gis';
 import type { ParcelRecord } from '../types/parcel';
 import { polygonAreaSqM, polygonCentroid, scalePolygon } from './geometryEditService';
 
-const OVERPASS_ENDPOINTS = [
-  'https://overpass.kumi.systems/api/interpreter',
-  'https://overpass-api.de/api/interpreter',
-  'https://overpass.private.coffee/api/interpreter'
-];
+const OVERPASS_ENDPOINT = 'https://overpass-api.de/api/interpreter';
+
+function liveBuildingRequestUrl(center: [number, number], radiusMeters: number, query: string) {
+  if (import.meta.env.PROD) {
+    const params = new URLSearchParams({
+      lat: String(center[0]),
+      lng: String(center[1]),
+      radius: String(radiusMeters)
+    });
+    return `/api/overpass?${params.toString()}`;
+  }
+  return `${OVERPASS_ENDPOINT}?data=${encodeURIComponent(query)}`;
+}
 
 interface OverpassGeometryPoint { lat: number; lon: number }
 interface OverpassElement {
@@ -43,6 +51,12 @@ const EXCLUDED_BUILDING_TYPES = new Set([
   'church', 'mosque', 'temple', 'train_station', 'service'
 ]);
 
+/**
+ * Reference-footprint quality gate used by the MVP before a mapped OSM polygon is
+ * treated as a candidate house. This prevents road/highway geometry, tiny sheds,
+ * roof-only structures and extreme sliver polygons from entering the house scan.
+ * It is still reference alignment, not imagery AI inference or cadastral truth.
+ */
 export function isLikelyHouseCandidate(
   footprint: PolygonGeometry,
   tags: Record<string, string> = {}
@@ -114,67 +128,16 @@ function alignTemplate(
   };
 }
 
-async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit, timeoutMs = 16_000) {
-  const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(input, { ...init, signal: controller.signal });
-  } finally {
-    window.clearTimeout(timer);
-  }
-}
-
-async function fetchOverpassPayload(query: string): Promise<OverpassResponse> {
-  const attempts: string[] = [];
-
-  // On Vercel this same-origin serverless route avoids browser CORS/rate-limit friction.
-  // Under Vite dev it may 404; that is expected and we continue to public mirrors.
-  try {
-    const response = await fetchWithTimeout('/api/overpass', {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain', Accept: 'application/json' },
-      body: query
-    });
-    const contentType = response.headers.get('content-type') ?? '';
-    if (response.ok && contentType.includes('application/json')) {
-      return await response.json() as OverpassResponse;
-    }
-    attempts.push(`app proxy ${response.status}`);
-  } catch (error) {
-    attempts.push(`app proxy ${error instanceof Error ? error.message : 'failed'}`);
-  }
-
-  for (const endpoint of OVERPASS_ENDPOINTS) {
-    try {
-      const body = new URLSearchParams({ data: query });
-      const response = await fetchWithTimeout(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
-          Accept: 'application/json'
-        },
-        body
-      });
-      if (!response.ok) {
-        attempts.push(`${new URL(endpoint).host} ${response.status}`);
-        continue;
-      }
-      return await response.json() as OverpassResponse;
-    } catch (error) {
-      attempts.push(`${new URL(endpoint).host} ${error instanceof Error ? error.message : 'failed'}`);
-    }
-  }
-
-  throw new Error(`Live building reference is temporarily unavailable. Tried ${OVERPASS_ENDPOINTS.length + 1} sources. Retry in a moment or use another network. (${attempts.join(' · ')})`);
-}
-
 export async function fetchAlignedBuildingParcels(
   templates: ParcelRecord[],
   center: [number, number] = [13.0417, 80.2367],
   radiusMeters = 320
 ): Promise<ParcelRecord[]> {
   const query = `[out:json][timeout:25];way["building"](around:${radiusMeters},${center[0]},${center[1]});out geom;`;
-  const payload = await fetchOverpassPayload(query);
+  const url = liveBuildingRequestUrl(center, radiusMeters, query);
+  const response = await fetch(url, { headers: { Accept: 'application/json' } });
+  if (!response.ok) throw new Error(`Live building reference request failed (${response.status}).`);
+  const payload = await response.json() as OverpassResponse;
 
   const footprints = (payload.elements ?? [])
     .filter((element) => element.type === 'way' && element.geometry && element.geometry.length >= 4)
@@ -188,7 +151,7 @@ export async function fetchAlignedBuildingParcels(
     });
 
   if (footprints.length < 8) {
-    throw new Error('The live reference returned too few likely-house footprints for this analysis area. Zoom/area selection or reference coverage may be insufficient.');
+    throw new Error('Not enough residential building footprints were returned for this analysis area.');
   }
 
   return footprints.map(({ element, footprint }, index) => {

@@ -28,7 +28,7 @@ export function AdminDashboard() {
       setMessage(`Area analysis mapped ${routing.total} reference-aligned house candidates. ${routing.noMajorIssue} no-major-issue · ${routing.needsVerification} targeted verification · ${routing.majorConflict} major conflict · ${routing.complexCase} complex.`);
     } catch (error) {
       const detail = error instanceof Error ? error.message : 'Building-footprint alignment failed.';
-      setErrorMessage(`${detail} No fake house polygons were substituted. Click Run area analysis again to retry the live building-reference service.`);
+      setErrorMessage(`${detail} Area analysis was not completed, because the app will not label the old synthetic roadside rectangles as detected houses.`);
     } finally {
       setProcessing(false);
     }
@@ -43,7 +43,7 @@ export function AdminDashboard() {
       setAlignmentMessage(`${count} likely-house building footprints loaded from the live map reference. Tiny sheds, road geometry, roof-only structures and extreme sliver polygons are filtered out. Run area analysis next.`);
     } catch (error) {
       const detail = error instanceof Error ? error.message : 'Live building alignment failed.';
-      setErrorMessage(`${detail} No synthetic house count was substituted. Retry Preview mapped houses, or deploy to Vercel where the same-origin proxy reduces browser CORS failures.`);
+      setErrorMessage(`${detail} No synthetic house count has been substituted. Retry when the live reference service is available.`);
     } finally {
       setAlignmentLoading(false);
     }
